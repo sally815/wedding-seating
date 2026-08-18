@@ -23,7 +23,7 @@
   "initials": "S & O",
   "dateEn": "September 2026",
   "dateZh": "2026 年 9 月",
-  "macroHold": 0
+  "macroHold": 500
  },
  "tables": [
   {
@@ -1347,6 +1347,7 @@ h1.display{font-family:var(--serif);font-weight:300;letter-spacing:.01em;line-he
       <div class="date" data-anim id="ln-date">September 2026</div>
       <div class="greet" data-anim>
         <div class="g-en">Thank you for coming</div>
+        <div class="g-zh">感谢您的莅临</div>
       </div>
       <div class="lang-q" data-anim>Language · 语言</div>
       <div class="lang-grid">
@@ -1853,6 +1854,7 @@ const SHEET_MINI = 94, MACRO_TILT = 13, OVER_TILT = 8;
 /* FLY = seconds for the macro→micro camera move. Both the camera tween and the
    tilt-levelling tween read it, so they always stay in sync. */
 const FLY = 1.0;
+let flying = null;           // the in-progress reveal timeline, if any
 const sheetFull = () => $('#sheetcard').offsetHeight + 24;
 function frame(bottomReserve) {
   const top = 66;
@@ -1893,6 +1895,7 @@ function tweenCam(to, dur, ease, extra) {
     vp.setPointerCapture(e.pointerId);
     pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
     vp.classList.add('drag');
+    skipFlight();            // land on the table first, then let them explore
     gsap.killTweensOf(CAM);
     base = null;
   });
@@ -1919,6 +1922,7 @@ function tweenCam(to, dur, ease, extra) {
   vp.addEventListener('pointerup', up); vp.addEventListener('pointercancel', up);
   vp.addEventListener('wheel', e => {
     e.preventDefault();
+    skipFlight();
     const r = vp.getBoundingClientRect();
     const ns = clampS(CAM.s * (e.deltaY > 0 ? 0.90 : 1.11));
     const px = (e.clientX - r.left - CAM.tx) / CAM.s, py = (e.clientY - r.top - CAM.ty) / CAM.s;
@@ -2012,12 +2016,14 @@ $('#btn-lang-switch').addEventListener('click', () => {
 });
 
 function goHome() {
+  if (flying) { flying.kill(); flying = null; }
   gsap.killTweensOf(CAM);
   $('#q').value = ''; $('#sbc').classList.remove('on'); renderResults('');
   CHOSEN = null; zoomedOut = false; clearFocus();
   show('lang'); animIn('[data-anim]', SCREENS.lang);
 }
 function goSearch() {
+  if (flying) { flying.kill(); flying = null; }
   gsap.killTweensOf(CAM);
   CHOSEN = null; zoomedOut = false; clearFocus();
   show('search'); animIn('[data-anim2]', SCREENS.search);
@@ -2099,18 +2105,43 @@ function reveal(g) {
   gsap.set(stage.querySelectorAll('.tbl, .couple-tag'), { opacity: 0 });
   if (node.pin) gsap.set(pin, { opacity: 0, y: 10 });
 
+  // HOLD is an absolute position on the timeline, not a `+=` offset chained after
+  // the entrance tweens — so it literally means "seconds from arrival until the
+  // camera starts moving", which is what you'd expect when you tune it.
+  const HOLD = Math.max(0, CONFIG.macroHold / 1000);
+
   const tl = gsap.timeline();
+  flying = tl;
   tl.to(stage.querySelectorAll('.tbl, .couple-tag'), {
-    opacity: 1, duration: .7, stagger: { each: .028, from: 'center' }, ease: 'power2.out'
+    opacity: 1, duration: .38, stagger: { each: .012, from: 'center' }, ease: 'power2.out'
   }, 0)
-    .to(node.el, { scale: 1, duration: .7, ease: 'back.out(1.7)' }, .1)
-    .to(cap, { opacity: 1, y: 0, duration: .7, ease: 'power3.out' }, .15)
-    .to(hud, { opacity: 1, y: 0, duration: .6, ease: 'power3.out' }, .3)
-    .to(cap, { opacity: 0, y: -12, duration: .5, ease: 'power2.in' }, `+=${CONFIG.macroHold / 1000}`)
-    .add(() => { gsap.to({ v: MACRO_TILT }, { v: 0, duration: FLY, ease: 'power3.inOut', onUpdate: function () { setTilt(this.targets()[0].v); } }); })
-    .to(CAM, { s: end.s, tx: end.tx, ty: end.ty, duration: FLY, ease: 'power3.inOut', onUpdate: applyCam }, '<')
-    .to(sheetCard, { y: 0, opacity: 1, duration: .85, ease: 'power3.out' }, '-=0.75')
-    .to(pin, { opacity: 1, y: 0, duration: .5, ease: 'back.out(2)' }, '-=0.6');
+    .to(node.el, { scale: 1, duration: .5, ease: 'back.out(1.7)' }, .05)
+    .to(cap, { opacity: 1, y: 0, duration: .38, ease: 'power3.out' }, .06)
+    .to(hud, { opacity: 1, y: 0, duration: .38, ease: 'power3.out' }, .14)
+    // everything below starts at HOLD — the caption clears as the camera moves,
+    // rather than the fly waiting for the caption to finish fading
+    .to(cap, { opacity: 0, y: -12, duration: Math.min(.35, FLY * .5), ease: 'power2.in' }, HOLD)
+    .add(() => {
+      gsap.to({ v: MACRO_TILT }, {
+        v: 0, duration: FLY, ease: 'power3.inOut',
+        onUpdate: function () { setTilt(this.targets()[0].v); }
+      });
+    }, HOLD)
+    .to(CAM, { s: end.s, tx: end.tx, ty: end.ty, duration: FLY, ease: 'power3.inOut', onUpdate: applyCam }, HOLD)
+    .to(sheetCard, { y: 0, opacity: 1, duration: .6, ease: 'power3.out' }, HOLD + FLY * .55)
+    .to(pin, { opacity: 1, y: 0, duration: .4, ease: 'back.out(2)' }, HOLD + FLY * .7)
+    .eventCallback('onComplete', () => { flying = null; });
+}
+
+/* If a guest grabs the plan mid-flight, don't just abandon the camera wherever
+   it happened to be — race it to the destination and hand over control there.
+   Testing showed people pinch almost immediately, and aborting left them lost. */
+function skipFlight() {
+  if (!flying) return;
+  const tl = flying; flying = null;
+  tl.progress(1, false);
+  gsap.killTweensOf(CAM);
+  setTilt(0);
 }
 
 /* ─── 13. RESULT SHEET ───────────────────────────────────────── */
@@ -2210,6 +2241,7 @@ function setSheetCollapsed(collapsed, dur) {
 })();
 $('#btn-zoomtoggle').addEventListener('click', () => {
   if (!CHOSEN) return;
+  skipFlight();
   gsap.killTweensOf(CAM);
   zoomedOut = !zoomedOut; paint();
   setSheetCollapsed(zoomedOut, .8);
